@@ -13,6 +13,7 @@ module GraphQL
           child_class.default_relay(true)
           child_class.has_nodes_field(true)
           child_class.node_nullable(true)
+          child_class.skip_nodes_on_raise(false)
           child_class.edges_nullable(true)
           child_class.edge_nullable(true)
           add_page_info_field(child_class)
@@ -36,7 +37,7 @@ module GraphQL
           # class name to set defaults. You can call it again in the class definition
           # to override the default (or provide a value, if the default lookup failed).
           # @param field_options [Hash] Any extra keyword arguments to pass to the `field :edges, ...` and `field :nodes, ...` configurations
-          def edge_type(edge_type_class, edge_class: GraphQL::Pagination::Connection::Edge, node_type: edge_type_class.node_type, nodes_field: self.has_nodes_field, node_nullable: self.node_nullable, edges_nullable: self.edges_nullable, edge_nullable: self.edge_nullable, field_options: nil)
+          def edge_type(edge_type_class, edge_class: GraphQL::Pagination::Connection::Edge, node_type: edge_type_class.node_type, nodes_field: self.has_nodes_field, node_nullable: self.node_nullable, skip_nodes_on_raise: self.skip_nodes_on_raise, edges_nullable: self.edges_nullable, edge_nullable: self.edge_nullable, field_options: nil)
             # Set this connection's graphql name
             node_type_name = node_type.graphql_name
 
@@ -60,7 +61,7 @@ module GraphQL
 
             field(**base_field_options)
 
-            define_nodes_field(node_nullable, field_options: field_options) if nodes_field
+            define_nodes_field(node_nullable, skip_nodes_on_raise, field_options: field_options) if nodes_field
 
             description("The connection type for #{node_type_name}.")
           end
@@ -71,8 +72,8 @@ module GraphQL
           end
 
           # Add the shortcut `nodes` field to this connection and its subclasses
-          def nodes_field(node_nullable: self.node_nullable, field_options: nil)
-            define_nodes_field(node_nullable, field_options: field_options)
+          def nodes_field(node_nullable: self.node_nullable, skip_nodes_on_raise: self.skip_nodes_on_raise, field_options: nil)
+            define_nodes_field(node_nullable, skip_nodes_on_raise, field_options: field_options)
           end
 
           def authorized?(obj, ctx)
@@ -91,6 +92,14 @@ module GraphQL
               defined?(@node_nullable) ? @node_nullable : superclass.node_nullable
             else
               @node_nullable = new_value
+            end
+          end
+
+          def skip_nodes_on_raise(new_value = nil)
+            if new_value.nil?
+              defined?(@skip_nodes_on_raise) ? @skip_nodes_on_raise : superclass.skip_nodes_on_raise
+            else
+              @skip_nodes_on_raise = new_value
             end
           end
 
@@ -126,7 +135,7 @@ module GraphQL
 
           private
 
-          def define_nodes_field(nullable, field_options: nil)
+          def define_nodes_field(nullable, skip_nodes_on_raise, field_options: nil)
             base_field_options = {
               name: :nodes,
               type: [@node_type, null: nullable],
@@ -135,6 +144,7 @@ module GraphQL
               connection: false,
               # Assume that the connection was scoped before this step:
               scope: false,
+              skip_nodes_on_raise: skip_nodes_on_raise,
             }
             if field_options
               base_field_options.merge!(field_options)
