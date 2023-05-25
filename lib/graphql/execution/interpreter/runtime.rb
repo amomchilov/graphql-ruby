@@ -30,6 +30,18 @@ module GraphQL
           attr_accessor :graphql_non_null_field_names
           # @return [nil, true]
           attr_accessor :graphql_non_null_list_items
+          # True when this result is a List that was marked `skip_items_on_raise: true`.
+          # Descendants of this result will have `can_be_skipped?` be true.
+          # @return [nil, true]
+          attr_accessor :graphql_skip_list_items_that_raise
+
+          # A result can be skipped when it's an ancestor of an item in a List marked `skip_items_on_raise: true`.
+          # @return [Boolean]
+          def can_be_skipped?
+            return @can_be_skipped if defined?(@can_be_skipped)
+
+            @can_be_skipped = graphql_skip_list_items_that_raise || !!(graphql_parent && graphql_parent.can_be_skipped?)
+          end
 
           # @return [Hash] Plain-Ruby result data (`@graphql_metadata` contains Result wrapper objects)
           attr_accessor :graphql_result_data
@@ -513,10 +525,14 @@ module GraphQL
               rescue GraphQL::ExecutionError => err
                 err
               rescue StandardError => err
-                begin
-                  query.handle_or_reraise(err)
-                rescue GraphQL::ExecutionError => ex_err
-                  ex_err
+                if selection_result.can_be_skipped?
+                  context.skip_from_parent_list # Skip silently without informing the user's `rescue_from` block.
+                else
+                  begin
+                    query.handle_or_reraise(err)
+                  rescue GraphQL::ExecutionError => ex_err
+                    ex_err
+                  end
                 end
               end
               after_lazy(app_result, owner: owner_type, field: field_defn, path: next_path, ast_node: ast_node, owner_object: object, arguments: resolved_arguments, result_name: result_name, result: selection_result) do |inner_result|
@@ -564,6 +580,19 @@ module GraphQL
                 @response = nil
               else
                 set_result(parent, name_in_parent, nil)
+                set_graphql_dead(selection_result)
+              end
+            elsif value == GraphQL::Execution::SKIP_FROM_PARENT_LIST
+              if selection_result.graphql_skip_list_items_that_raise # This is the first list that this item can be skipped from.
+                unless selection_result.is_a?(GraphQLResultArray)
+                  raise "Invariant: unexpected result class #{selection_result.class} (#{selection_result.inspect})"
+                end
+
+                selection_result.graphql_skip_at(result_name)
+              else # Propograte up to find the first list this item can be skipped from.
+                parent = selection_result.graphql_parent
+                name_in_parent = selection_result.graphql_result_name
+                set_result(parent, name_in_parent, GraphQL::Execution::SKIP_FROM_PARENT_LIST)
                 set_graphql_dead(selection_result)
               end
             else
@@ -647,6 +676,12 @@ module GraphQL
                 raise "Invariant: unexpected result class #{selection_result.class} (#{selection_result.inspect})"
               end
               HALT
+            elsif GraphQL::Execution::SKIP_FROM_PARENT_LIST == value
+              unless selection_result.can_be_skipped?
+                raise "Cannot skip list items from lists not marked `skip_items_on_raise: true`"
+              end
+
+              set_result(selection_result, result_name, GraphQL::Execution::SKIP_FROM_PARENT_LIST)
             else
               # What could this actually _be_? Anyhow,
               # preserve the default behavior of doing nothing with it.
@@ -780,6 +815,7 @@ module GraphQL
             use_dataloader_job = !inner_type.unwrap.kind.input?
             response_list = GraphQLResultArray.new(result_name, selection_result)
             response_list.graphql_non_null_list_items = inner_type.non_null?
+            response_list.graphql_skip_list_items_that_raise = current_type.skip_nodes_on_raise?
             set_result(selection_result, result_name, response_list)
             result_was_set = false
             idx = 0
