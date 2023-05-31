@@ -207,7 +207,7 @@ module GraphQL
 
       def_delegators :@query, :trace, :interpreter?
 
-      RUNTIME_METADATA_KEYS = Set.new([:current_object, :current_arguments, :current_field, :current_path])
+      RUNTIME_METADATA_KEYS = Set.new([:current_object, :current_arguments, :current_field, :current_path, :current_list_item_to_skip])
       # @!method []=(key, value)
       #   Reassign `key` to the hash passed to {Schema#execute} as `context:`
 
@@ -313,6 +313,11 @@ module GraphQL
       def scoped_set!(key, value)
         scoped_merge!(key => value)
         nil
+      end
+
+      def can_skip_list_item?
+        thread_info = Thread.current[:__graphql_runtime_info]
+        thread_info && thread_info.key?(:current_list_item_to_skip)
       end
     end
   end

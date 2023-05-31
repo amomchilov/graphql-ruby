@@ -525,14 +525,17 @@ module GraphQL
               rescue GraphQL::ExecutionError => err
                 err
               rescue StandardError => err
-                if selection_result.can_be_skipped?
-                  context.skip_from_parent_list # Skip silently without informing the user's `rescue_from` block.
-                else
-                  begin
+                begin
+                  if selection_result.can_be_skipped?
+                    set_interpreter_context(:current_list_item_to_skip, nil) # Just set the key for now
+                    result = query.handle_or_reraise(err)
+                    delete_interpreter_context(:current_list_item_to_skip)
+                    result
+                  else
                     query.handle_or_reraise(err)
-                  rescue GraphQL::ExecutionError => ex_err
-                    ex_err
                   end
+                rescue GraphQL::ExecutionError => ex_err
+                  ex_err
                 end
               end
               after_lazy(app_result, owner: owner_type, field: field_defn, path: next_path, ast_node: ast_node, owner_object: object, arguments: resolved_arguments, result_name: result_name, result: selection_result) do |inner_result|

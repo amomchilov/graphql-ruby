@@ -250,5 +250,18 @@ module ListItemSkippingTest
 
   class Schema < GraphQL::Schema
     query QueryType
+
+    rescue_from(StandardError) do |err, object, _args, context, field|
+      if context.can_skip_list_item?
+        puts <<~MSG
+          Trying to resolve #{field.name.inspect} on #{object} raised a #{err.class.name.inspect},
+          so we'll skip this item in the list.
+        MSG
+
+        next context.skip_from_parent_list
+      end
+
+      raise
+    end
   end
 end
