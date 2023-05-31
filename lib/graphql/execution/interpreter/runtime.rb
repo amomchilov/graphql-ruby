@@ -10,7 +10,11 @@ module GraphQL
       class Runtime
 
         module GraphQLResult
-          def initialize(result_name, parent_result)
+          # FIXME: storing `represented_value` here holds onto a lot of objects, keeping them from GCing and increasing peak memory.
+          #   ... but the value is only needed for lists with skippable items.
+          #   Maybe we can set to `nil` unless we know this object is a skippable list item
+          #   (i.e. a direct child of a list with `skip_items_on_raise: true`)
+          def initialize(result_name, parent_result, represented_value)
             @graphql_parent = parent_result
             if parent_result && parent_result.graphql_dead
               @graphql_dead = true
@@ -18,10 +22,11 @@ module GraphQL
             @graphql_result_name = result_name
             # Jump through some hoops to avoid creating this duplicate storage if at all possible.
             @graphql_metadata = nil
+            @represented_value = represented_value
           end
 
           attr_accessor :graphql_dead
-          attr_reader :graphql_parent, :graphql_result_name
+          attr_reader :graphql_parent, :graphql_result_name, :represented_value
 
           # Although these are used by only one of the Result classes,
           # it's handy to have the methods implemented on both (even though they just return `nil`)
@@ -43,12 +48,20 @@ module GraphQL
             @can_be_skipped = graphql_skip_list_items_that_raise || !!(graphql_parent && graphql_parent.can_be_skipped?)
           end
 
+          def find_first_skippable_object
+            @first_skippable_object ||= if graphql_parent&.graphql_skip_list_items_that_raise
+              self
+            else
+              graphql_parent&.find_first_skippable_parent
+            end
+          end
+
           # @return [Hash] Plain-Ruby result data (`@graphql_metadata` contains Result wrapper objects)
           attr_accessor :graphql_result_data
         end
 
         class GraphQLResultHash
-          def initialize(_result_name, _parent_result)
+          def initialize(result_name, parent_result, represented_value)
             super
             @graphql_result_data = {}
           end
@@ -109,7 +122,7 @@ module GraphQL
         class GraphQLResultArray
           include GraphQLResult
 
-          def initialize(_result_name, _parent_result)
+          def initialize(_result_name, _parent_result, represented_value)
             super
             @graphql_result_data = []
           end
@@ -177,7 +190,7 @@ module GraphQL
           @multiplex_context = query.multiplex.context
           # Start this off empty:
           Thread.current[:__graphql_runtime_info] = nil
-          @response = GraphQLResultHash.new(nil, nil)
+          @response = GraphQLResultHash.new(nil, nil, query.root_value)
           # Identify runtime directives by checking which of this schema's directives have overridden `def self.resolve`
           @runtime_directive_names = []
           noop_resolve_owner = GraphQL::Schema::Directive.singleton_class
@@ -240,7 +253,7 @@ module GraphQL
               # directly evaluated and the results can be written right into the main response hash.
               tap_or_each(gathered_selections) do |selections, is_selection_array|
                 if is_selection_array
-                  selection_response = GraphQLResultHash.new(nil, nil)
+                  selection_response = GraphQLResultHash.new(nil, nil, query.root_value)
                   final_response = @response
                 else
                   selection_response = @response
@@ -527,7 +540,7 @@ module GraphQL
               rescue StandardError => err
                 begin
                   if selection_result.can_be_skipped?
-                    set_interpreter_context(:current_list_item_to_skip, nil) # Just set the key for now
+                    set_interpreter_context(:current_list_item_to_skip, selection_result.find_first_skippable_object.represented_value.object)
                     result = query.handle_or_reraise(err)
                     delete_interpreter_context(:current_list_item_to_skip)
                     result
@@ -776,7 +789,7 @@ module GraphQL
             after_lazy(object_proxy, owner: current_type, path: path, ast_node: ast_node, field: field, owner_object: owner_object, arguments: arguments, trace: false, result_name: result_name, result: selection_result) do |inner_object|
               continue_value = continue_value(path, inner_object, owner_type, field, is_non_null, ast_node, result_name, selection_result)
               if HALT != continue_value
-                response_hash = GraphQLResultHash.new(result_name, selection_result)
+                response_hash = GraphQLResultHash.new(result_name, selection_result, continue_value)
                 set_result(selection_result, result_name, response_hash)
                 gathered_selections = gather_selections(continue_value, current_type, next_selections)
                 # There are two possibilities for `gathered_selections`:
@@ -789,7 +802,7 @@ module GraphQL
                 #    (Technically, it's possible that one of those entries _doesn't_ require isolation.)
                 tap_or_each(gathered_selections) do |selections, is_selection_array|
                   if is_selection_array
-                    this_result = GraphQLResultHash.new(result_name, selection_result)
+                    this_result = GraphQLResultHash.new(result_name, selection_result, continue_value)
                     final_result = response_hash
                   else
                     this_result = response_hash
@@ -816,7 +829,7 @@ module GraphQL
             inner_type = current_type.of_type
             # This is true for objects, unions, and interfaces
             use_dataloader_job = !inner_type.unwrap.kind.input?
-            response_list = GraphQLResultArray.new(result_name, selection_result)
+            response_list = GraphQLResultArray.new(result_name, selection_result, value)
             response_list.graphql_non_null_list_items = inner_type.non_null?
             response_list.graphql_skip_list_items_that_raise = current_type.skip_nodes_on_raise?
             set_result(selection_result, result_name, response_list)

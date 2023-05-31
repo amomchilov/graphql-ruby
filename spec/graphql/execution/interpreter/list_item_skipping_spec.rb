@@ -253,9 +253,13 @@ module ListItemSkippingTest
 
     rescue_from(StandardError) do |err, object, _args, context, field|
       if context.can_skip_list_item?
+        # `list_item_to_skip` will differ from `object` when the error is raised when resolving a field that isn't
+        # directly on the skippable list item, but on one of its children.
+        list_item_to_skip = context[:current_list_item_to_skip]
+
         puts <<~MSG
           Trying to resolve #{field.name.inspect} on #{object} raised a #{err.class.name.inspect},
-          so we'll skip this item in the list.
+          so we'll skip this item in the list: #{list_item_to_skip}.
         MSG
 
         next context.skip_from_parent_list
